@@ -1,0 +1,65 @@
+name: Build Cosmify installers
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'Cosmify-project-with-build-script.zip'
+      - '.github/workflows/build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Extract project ZIP
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:GITHUB_WORKSPACE 'Cosmify-project-with-build-script.zip'
+          if (!(Test-Path $archive)) { throw "Project ZIP was not found." }
+          $extract = Join-Path $env:RUNNER_TEMP 'cosmify-src'
+          Expand-Archive -LiteralPath $archive -DestinationPath $extract -Force
+          $projects = Get-ChildItem -Path $extract -Filter '*.csproj' -Recurse
+          if (!$projects) { throw "No .csproj file found inside the ZIP. The archive does not contain a buildable MAUI project." }
+          $project = $projects | Where-Object { $_.Name -match 'Cosmify' } | Select-Object -First 1
+          if (!$project) { $project = $projects | Select-Object -First 1 }
+          "PROJECT_FILE=$($project.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "PROJECT_DIR=$($project.Directory.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Using project: $($project.FullName)"
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install MAUI workloads
+        run: dotnet workload install maui
+
+      - name: Restore
+        run: dotnet restore "$env:PROJECT_FILE"
+
+      - name: Build Android APK
+        shell: pwsh
+        run: |
+          dotnet publish "$env:PROJECT_FILE" -f net10.0-android -c Release -p:AndroidPackageFormat=apk -o "$env:GITHUB_WORKSPACE\dist\android"
+
+      - name: Build Windows package
+        shell: pwsh
+        run: |
+          dotnet publish "$env:PROJECT_FILE" -f net10.0-windows10.0.19041.0 -c Release -r win-x64 --self-contained true -p:WindowsPackageType=None -o "$env:GITHUB_WORKSPACE\dist\windows"
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cosmify-installers
+          path: |
+            dist/android/**/*.apk
+            dist/windows/**
+          if-no-files-found: error
+          retention-days: 14
